@@ -46,7 +46,14 @@ export const generateImageFromPrompt = async (prompt: string, referenceImages: I
                 userFriendlyError = "The model did not generate an image for this prompt, possibly due to safety policies or prompt clarity. Please try regenerating.";
                 break;
             case 'SAFETY':
-                 userFriendlyError = "Image generation was blocked due to safety policies. Please try a different prompt.";
+                 userFriendlyError = `Image generation was blocked due to safety policies. This can happen for prompts that are ambiguous or could be interpreted as unsafe.
+
+Suggestions to fix:
+• Be more specific and descriptive: Instead of 'a person fighting', try 'a prehistoric hunter throwing a spear at a mammoth'.
+• Focus on documentary-style actions: 'The tribe works together to build a shelter.'
+• Avoid potentially sensitive terms related to harm or violence.
+
+Please revise your prompt and try again.`;
                  break;
             default:
                 userFriendlyError = `Image generation failed: ${finishReason}`;
