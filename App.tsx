@@ -382,7 +382,7 @@ const PromptDisplay: FC<PromptDisplayProps> = ({
                         {isBatchGenerating ? <SpinnerIcon className="h-4 w-4 animate-spin"/> : <SparklesIcon className="h-4 w-4" />}
                         {isBatchGenerating ? 'Generating...' : 'Generate All Images'}
                     </button>
-                    <button onClick={onDownloadAllImages} disabled={!hasGeneratedImages || isBatchGenerating} className="bg-orange-600 hover:bg-orange-500 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
+                    <button onClick={onDownloadAllImages} disabled={!hasGeneratedImages || isBatchGenerating} className="bg-orange-500 hover:bg-orange-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
                         <DownloadIcon className="h-4 w-4" />
                         Download All Images
                     </button>
@@ -510,6 +510,13 @@ const ApiKeyModal: FC<ApiKeyModalProps> = ({ isOpen, onClose, apiKeys, onAddKey,
 
 // --- TOAST NOTIFICATION COMPONENT ---
 const Toast: FC<{ message: string | null; onClose: () => void }> = ({ message, onClose }) => {
+  useEffect(() => {
+    if (message) {
+      const timer = setTimeout(onClose, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [message, onClose]);
+
   if (!message) return null;
 
   return (
@@ -563,16 +570,6 @@ export default function App() {
         console.error("Failed to load settings from localStorage", e);
     }
   }, []); 
-
-  useEffect(() => {
-    // Auto-hide error toast after 5 seconds
-    if (error) {
-      const timer = setTimeout(() => {
-        setError(null);
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [error]);
 
   const updateAndSaveKeys = (newKeys: ApiKey[]) => {
     setApiKeys(newKeys);
