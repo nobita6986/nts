@@ -382,7 +382,7 @@ const PromptDisplay: FC<PromptDisplayProps> = ({
                         {isBatchGenerating ? <SpinnerIcon className="h-4 w-4 animate-spin"/> : <SparklesIcon className="h-4 w-4" />}
                         {isBatchGenerating ? 'Generating...' : 'Generate All Images'}
                     </button>
-                    <button onClick={onDownloadAllImages} disabled={!hasGeneratedImages || isBatchGenerating} className="bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
+                    <button onClick={onDownloadAllImages} disabled={!hasGeneratedImages || isBatchGenerating} className="bg-orange-600 hover:bg-orange-500 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
                         <DownloadIcon className="h-4 w-4" />
                         Download All Images
                     </button>
@@ -508,6 +508,27 @@ const ApiKeyModal: FC<ApiKeyModalProps> = ({ isOpen, onClose, apiKeys, onAddKey,
     );
 };
 
+// --- TOAST NOTIFICATION COMPONENT ---
+const Toast: FC<{ message: string | null; onClose: () => void }> = ({ message, onClose }) => {
+  if (!message) return null;
+
+  return (
+    <div className="fixed top-6 right-6 w-auto max-w-sm bg-red-900/80 backdrop-blur-sm border border-red-700 text-red-200 px-4 py-3 rounded-lg shadow-lg z-50 animate-fade-in" role="alert">
+      <div className="flex items-start">
+        <div className="flex-1 pr-2">
+          <strong className="font-bold">Error: </strong>
+          <span className="break-words">{message}</span>
+        </div>
+        <button onClick={onClose} className="ml-auto -mt-1 -mr-1 p-1 rounded-full text-red-200 hover:text-white hover:bg-red-800/50 transition-colors" aria-label="Close">
+            <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+            </svg>
+        </button>
+      </div>
+    </div>
+  );
+};
+
 
 // --- MAIN APP COMPONENT ---
 
@@ -542,6 +563,16 @@ export default function App() {
         console.error("Failed to load settings from localStorage", e);
     }
   }, []); 
+
+  useEffect(() => {
+    // Auto-hide error toast after 5 seconds
+    if (error) {
+      const timer = setTimeout(() => {
+        setError(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
 
   const updateAndSaveKeys = (newKeys: ApiKey[]) => {
     setApiKeys(newKeys);
@@ -864,12 +895,7 @@ export default function App() {
         </button>
       </header>
       
-      {error && (
-        <div className="bg-red-900/50 border border-red-700 text-red-200 px-4 py-3 rounded-lg relative mb-6" role="alert">
-            <strong className="font-bold">Error: </strong>
-            <span className="block sm:inline">{error}</span>
-        </div>
-      )}
+      <Toast message={error} onClose={() => setError(null)} />
 
       <main className="grid lg:grid-cols-3 gap-6 items-start">
         <div className="lg:col-span-1">
