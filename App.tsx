@@ -2,6 +2,7 @@
 import React, { useState, useRef, useCallback, FC, useMemo, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { generateImageFromPrompt } from './services/geminiService';
+import { GoogleGenAI, Type } from "@google/genai";
 
 // --- TYPES & CONSTANTS ---
 export interface ImageFile {
@@ -26,12 +27,12 @@ interface Phase {
   ratio: number;
 }
 
-export interface ApiKey {
-    id: string;
-    provider: 'Google' | 'OpenAI';
-    key: string;
-    name: string;
-    isActive: boolean;
+interface ToastMessage {
+  id: string;
+  type: 'success' | 'error' | 'warning' | 'info';
+  title: string;
+  message: string;
+  persistent?: boolean;
 }
 
 const PHASES: Phase[] = [
@@ -115,6 +116,68 @@ const SparklesIcon: FC<{ className?: string }> = ({ className }) => (
     </svg>
 );
 
+const XMarkIcon: FC<{ className?: string }> = ({ className }) => (
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+    </svg>
+);
+
+// --- TOAST COMPONENTS ---
+
+const Toast: FC<{ toast: ToastMessage; onClose: (id: string) => void }> = ({ toast, onClose }) => {
+    const bgColor = {
+        success: 'bg-emerald-900/90 border-emerald-700',
+        error: 'bg-red-900/90 border-red-700',
+        warning: 'bg-amber-900/90 border-amber-700',
+        info: 'bg-blue-900/90 border-blue-700',
+    }[toast.type];
+
+    const iconColor = {
+        success: 'text-emerald-400',
+        error: 'text-red-400',
+        warning: 'text-amber-400',
+        info: 'text-blue-400',
+    }[toast.type];
+
+    return (
+        <div className={`pointer-events-auto w-full max-w-sm overflow-hidden rounded-lg shadow-lg ring-1 ring-black ring-opacity-5 ${bgColor} border backdrop-blur-sm p-4 transition-all animate-fade-in`}>
+            <div className="flex items-start">
+                <div className="flex-shrink-0">
+                    {/* Simple conditional icons */}
+                    {toast.type === 'success' && <svg className={`h-6 w-6 ${iconColor}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
+                    {toast.type === 'error' && <svg className={`h-6 w-6 ${iconColor}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
+                    {toast.type === 'warning' && <svg className={`h-6 w-6 ${iconColor}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>}
+                </div>
+                <div className="ml-3 w-0 flex-1 pt-0.5">
+                    <p className="text-sm font-medium text-gray-100">{toast.title}</p>
+                    <p className="mt-1 text-sm text-gray-300 whitespace-pre-line">{toast.message}</p>
+                </div>
+                <div className="ml-4 flex flex-shrink-0">
+                    <button
+                        type="button"
+                        className="inline-flex rounded-md text-gray-400 hover:text-gray-200 focus:outline-none"
+                        onClick={() => onClose(toast.id)}
+                    >
+                        <span className="sr-only">Close</span>
+                        <XMarkIcon className="h-5 w-5" />
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ToastContainer: FC<{ toasts: ToastMessage[]; removeToast: (id: string) => void }> = ({ toasts, removeToast }) => {
+    return (
+        <div className="fixed bottom-0 right-0 z-50 flex flex-col gap-2 p-4 sm:p-6 lg:items-end w-full sm:w-auto pointer-events-none">
+            {toasts.map((toast) => (
+                <Toast key={toast.id} toast={toast} onClose={removeToast} />
+            ))}
+        </div>
+    );
+};
+
+
 // --- CHILD COMPONENTS ---
 
 interface ControlPanelProps {
@@ -129,10 +192,13 @@ interface ControlPanelProps {
   scriptFileName: string | null;
   onScriptUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveScript: () => void;
+  hasApiKey: boolean;
+  onSelectKey: () => void;
 }
 const ControlPanel: FC<ControlPanelProps> = ({ 
     scenario, setScenario, duration, setDuration, referenceImages, onImageUpload, 
-    onBuildPrompts, isBuilding, scriptFileName, onScriptUpload, onRemoveScript 
+    onBuildPrompts, isBuilding, scriptFileName, onScriptUpload, onRemoveScript,
+    hasApiKey, onSelectKey
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scriptInputRef = useRef<HTMLInputElement>(null);
@@ -142,6 +208,20 @@ const ControlPanel: FC<ControlPanelProps> = ({
     <div className="bg-slate-950/50 border border-slate-800 p-6 rounded-2xl flex flex-col gap-6 sticky top-6">
       <h2 className="text-xl font-bold text-emerald-400">1. Setup</h2>
       
+      {!hasApiKey && (
+         <div className="bg-amber-900/30 border border-amber-700/50 p-4 rounded-lg">
+             <p className="text-amber-200 text-sm mb-3">A paid API key is required for high-quality image generation.</p>
+             <button 
+                onClick={onSelectKey}
+                className="w-full py-2 px-3 bg-amber-600 hover:bg-amber-500 text-white rounded-md text-sm font-medium transition flex items-center justify-center gap-2"
+             >
+                 <KeyIcon className="h-4 w-4" />
+                 Select API Key
+             </button>
+             <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noreferrer" className="block mt-2 text-xs text-amber-400 hover:text-amber-300 text-center">Billing Documentation</a>
+         </div>
+      )}
+
       <div>
         <label className="block text-sm font-medium text-slate-300 mb-2">📸 Upload {MAX_REFERENCE_IMAGES} Character Images</label>
         <div 
@@ -222,7 +302,7 @@ const ControlPanel: FC<ControlPanelProps> = ({
 
       <button
         onClick={onBuildPrompts}
-        disabled={!canBuild || isBuilding}
+        disabled={!canBuild || isBuilding || !hasApiKey}
         className="w-full py-3 px-4 rounded-md font-semibold text-black bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:text-slate-400 disabled:cursor-not-allowed transition-all flex items-center justify-center"
       >
         {isBuilding ? <SpinnerIcon className="animate-spin h-5 w-5 mr-2" /> : null}
@@ -288,652 +368,366 @@ const PromptCard: FC<PromptCardProps> = ({ prompt, onGenerateImage, isBatchGener
                 </div>
             </div>
 
-            {/* Image Generation */}
+            {/* Generation & Preview Area */}
             <div className="mt-4 pt-4 border-t border-slate-800">
-                {prompt.isLoading ? (
-                     <div className="w-full aspect-video bg-slate-800 rounded-lg flex items-center justify-center">
-                        <SpinnerIcon className="animate-spin h-8 w-8 text-emerald-500" />
-                     </div>
-                ) : prompt.generatedImageUrl ? (
-                    <div className="relative group">
-                      <img src={prompt.generatedImageUrl} alt={`Generated for Scene ${prompt.id}`} className="w-full aspect-video object-cover rounded-lg" />
-                      <div className="absolute top-2 right-2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <button 
-                            onClick={() => onGenerateImage(prompt.id)}
-                            disabled={isBatchGenerating || prompt.isLoading} 
-                            className="bg-black/50 p-2 rounded-full text-white hover:bg-emerald-500/80 transition-all disabled:bg-slate-600/50 disabled:cursor-not-allowed"
-                            aria-label="Regenerate image"
-                            title="Regenerate image"
-                          >
-                              <RegenerateIcon className="h-5 w-5"/>
-                          </button>
-                          <button 
-                            onClick={handleImageDownload} 
-                            className="bg-black/50 p-2 rounded-full text-white hover:bg-emerald-500/80 transition-all"
-                            aria-label="Download image"
-                            title="Download image"
-                          >
-                              <DownloadIcon className="h-5 w-5"/>
-                          </button>
-                      </div>
+                {prompt.generatedImageUrl ? (
+                    <div className="relative group rounded-md overflow-hidden bg-black/20">
+                         <img src={prompt.generatedImageUrl} alt="Generated scene" className="w-full h-auto object-contain max-h-[400px] rounded-md" />
+                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                             <button onClick={handleImageDownload} className="p-2 bg-slate-700 hover:bg-emerald-600 rounded-full text-white transition" title="Download Image">
+                                 <DownloadIcon className="h-5 w-5" />
+                             </button>
+                             <button onClick={() => onGenerateImage(prompt.id)} disabled={isBatchGenerating} className="p-2 bg-slate-700 hover:bg-blue-600 rounded-full text-white transition" title="Regenerate">
+                                 <RegenerateIcon className="h-5 w-5" />
+                             </button>
+                         </div>
                     </div>
                 ) : (
-                    <button 
-                        onClick={() => onGenerateImage(prompt.id)} 
-                        disabled={isBatchGenerating || prompt.isLoading}
-                        className={`w-full py-2 rounded-lg text-sm font-semibold transition-colors disabled:bg-slate-600 disabled:text-slate-400 disabled:cursor-not-allowed ${
-                            prompt.generationFailed 
-                            ? 'bg-red-800 hover:bg-red-700' 
-                            : 'bg-slate-700 hover:bg-emerald-600'
-                        }`}
-                    >
-                        {prompt.generationFailed ? 'Retry Generation' : 'Generate Image'}
-                    </button>
+                    <div className="flex flex-col items-center justify-center py-6 bg-slate-900/50 rounded-md border border-slate-800 border-dashed">
+                        {prompt.isLoading ? (
+                            <div className="flex flex-col items-center text-emerald-400">
+                                <SpinnerIcon className="animate-spin h-6 w-6 mb-2" />
+                                <span className="text-sm">Generating Image...</span>
+                            </div>
+                        ) : (
+                            <div className="text-center">
+                                {prompt.generationFailed ? (
+                                     <div className="mb-3 text-red-400 text-sm">Generation failed. Please try again.</div>
+                                ) : (
+                                     <p className="text-slate-500 text-sm mb-3">No image generated yet</p>
+                                )}
+                                <button 
+                                    onClick={() => onGenerateImage(prompt.id)} 
+                                    disabled={isBatchGenerating}
+                                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 text-sm font-medium rounded-full border border-slate-700 hover:border-emerald-500 transition flex items-center gap-2 mx-auto"
+                                >
+                                    <SparklesIcon className="h-4 w-4" />
+                                    Generate Image
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 )}
             </div>
         </div>
     );
 };
 
-
-interface PromptDisplayProps {
-    prompts: ScenePrompt[];
-    onGenerateImage: (id: number) => void;
-    onDownloadAllPrompts: () => void;
-    onGenerateAllImages: () => void;
-    onDownloadAllImages: () => void;
-    isBatchGenerating: boolean;
-    hasGeneratedImages: boolean;
-}
-const PromptDisplay: FC<PromptDisplayProps> = ({ 
-    prompts, onGenerateImage, onDownloadAllPrompts, onGenerateAllImages, onDownloadAllImages, 
-    isBatchGenerating, hasGeneratedImages 
-}) => {
-    const [copiedAll, setCopiedAll] = useState<'image' | 'video' | null>(null);
-
-    const handleCopyAll = (type: 'image' | 'video') => {
-        if (!prompts.length) return;
-        const textToCopy = prompts
-            .map(p => type === 'image' ? p.imagePrompt : p.videoPrompt)
-            .join('\n');
-        
-        navigator.clipboard.writeText(textToCopy);
-        setCopiedAll(type);
-        setTimeout(() => setCopiedAll(null), 2000);
-    };
-
-    if (prompts.length === 0) {
-        return (
-            <div className="bg-slate-950/50 border border-slate-800 p-6 rounded-2xl flex items-center justify-center min-h-[50vh]">
-                <div className="text-center text-slate-500">
-                    <h2 className="text-xl font-bold">Prompts will appear here</h2>
-                    <p>Complete the setup on the left to generate prompts.</p>
-                </div>
-            </div>
-        );
-    }
-    
-    return (
-        <div className="bg-slate-950/50 border border-slate-800 p-6 rounded-2xl">
-            <div className="flex flex-wrap justify-between items-center gap-4 mb-6">
-                <h2 className="text-xl font-bold text-emerald-400">2. Generated Prompts</h2>
-                <div className="flex flex-wrap gap-2">
-                    <button onClick={onGenerateAllImages} disabled={isBatchGenerating} className="bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
-                        {isBatchGenerating ? <SpinnerIcon className="h-4 w-4 animate-spin"/> : <SparklesIcon className="h-4 w-4" />}
-                        {isBatchGenerating ? 'Generating...' : 'Generate All Images'}
-                    </button>
-                    <button onClick={onDownloadAllImages} disabled={!hasGeneratedImages || isBatchGenerating} className="bg-orange-500 hover:bg-orange-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
-                        <DownloadIcon className="h-4 w-4" />
-                        Download All Images
-                    </button>
-                    <button onClick={() => handleCopyAll('image')} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
-                        <CopyIcon className="h-4 w-4" />
-                        {copiedAll === 'image' ? 'Copied!' : 'Copy All Image Prompts'}
-                    </button>
-                    <button onClick={() => handleCopyAll('video')} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
-                        <CopyIcon className="h-4 w-4" />
-                        {copiedAll === 'video' ? 'Copied!' : 'Copy All Video Prompts'}
-                    </button>
-                    <button onClick={onDownloadAllPrompts} className="bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2">
-                        <DownloadIcon className="h-4 w-4" />
-                        Download All Prompts (XLSX)
-                    </button>
-                </div>
-            </div>
-             <div className="space-y-4 max-h-[85vh] overflow-y-auto pr-2">
-                {prompts.map((p) => (
-                    <PromptCard key={p.id} prompt={p} onGenerateImage={onGenerateImage} isBatchGenerating={isBatchGenerating} />
-                ))}
-             </div>
-        </div>
-    );
-};
-
-// --- API MODAL COMPONENT ---
-
-interface ApiKeyModalProps {
-    isOpen: boolean;
-    onClose: () => void;
-    apiKeys: ApiKey[];
-    onAddKey: (provider: ApiKey['provider'], name: string, key: string) => void;
-    onDeleteKey: (id: string) => void;
-    onSetActiveKey: (id: string) => void;
-    selectedModel: string;
-    onSelectModel: (model: string) => void;
-}
-const ApiKeyModal: FC<ApiKeyModalProps> = ({ isOpen, onClose, apiKeys, onAddKey, onDeleteKey, onSetActiveKey, selectedModel, onSelectModel }) => {
-    const [newKeyName, setNewKeyName] = useState('');
-    const [newKeyValue, setNewKeyValue] = useState('');
-    const [activeProvider, setActiveProvider] = useState<ApiKey['provider']>('Google');
-
-    if (!isOpen) return null;
-
-    const handleAdd = () => {
-        if (newKeyName.trim() && newKeyValue.trim()) {
-            onAddKey(activeProvider, newKeyName, newKeyValue);
-            setNewKeyName('');
-            setNewKeyValue('');
-        }
-    };
-    
-    const maskKey = (key: string) => `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
-
-    const renderKeyList = (provider: ApiKey['provider']) => (
-        apiKeys.filter(k => k.provider === provider).map(key => (
-            <div key={key.id} className="flex items-center justify-between bg-slate-800 p-2 rounded-md">
-                <div className="flex flex-col text-sm">
-                    <span className="font-semibold text-white">{key.name}</span>
-                    <span className="text-slate-400 font-mono text-xs">{maskKey(key.key)}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    {key.isActive ? (
-                        <span className="text-xs font-bold text-emerald-400 bg-emerald-900/50 px-2 py-1 rounded-full">ACTIVE</span>
-                    ) : (
-                        <button onClick={() => onSetActiveKey(key.id)} className="text-xs font-semibold text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded-md transition">Set Active</button>
-                    )}
-                    <button onClick={() => onDeleteKey(key.id)} className="text-slate-400 hover:text-red-500 p-1 rounded-md transition" aria-label="Delete key"><TrashIcon className="h-4 w-4" /></button>
-                </div>
-            </div>
-        ))
-    );
-    
-    return (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 animate-fade-in">
-            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-                <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-2xl font-bold text-emerald-400">API & Model Settings</h2>
-                    <button onClick={onClose} className="text-slate-400 hover:text-white">&times;</button>
-                </div>
-
-                <div className="space-y-6">
-                    <div>
-                        <label htmlFor="model-select" className="block text-sm font-medium text-slate-300 mb-2">Active AI Model</label>
-                        <select
-                            id="model-select"
-                            value={selectedModel}
-                            onChange={(e) => onSelectModel(e.target.value)}
-                            className="w-full bg-slate-800 border border-slate-700 p-3 rounded-md focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition"
-                        >
-                            <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
-                            <option value="gemini-2.5-pro" disabled>Gemini 2.5 Pro (Text only)</option>
-                            <option value="dall-e-3" disabled>DALL-E 3 (Coming Soon)</option>
-                        </select>
-                    </div>
-
-                    <div>
-                        <div className="border-b border-slate-700 mb-4">
-                            <nav className="-mb-px flex space-x-4" aria-label="Tabs">
-                                <button onClick={() => setActiveProvider('Google')} className={`${activeProvider === 'Google' ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-slate-400 hover:text-white hover:border-slate-500'} whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm transition-colors`}>Google AI</button>
-                                <button onClick={() => setActiveProvider('OpenAI')} className={`${activeProvider === 'OpenAI' ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-slate-400 hover:text-white hover:border-slate-500'} whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm transition-colors`}>OpenAI</button>
-                            </nav>
-                        </div>
-                        
-                        <div className="space-y-3 p-1">
-                            <h3 className="text-lg font-semibold text-slate-200 mb-2">Add New {activeProvider} Key</h3>
-                             <div className="flex flex-col md:flex-row gap-2">
-                                <input type="text" placeholder="Nickname" value={newKeyName} onChange={e => setNewKeyName(e.target.value)} className="flex-grow bg-slate-800 border border-slate-700 p-2 rounded-md focus:ring-1 focus:ring-emerald-500 transition text-sm" />
-                                <input type="password" placeholder="API Key" value={newKeyValue} onChange={e => setNewKeyValue(e.target.value)} className="flex-grow bg-slate-800 border border-slate-700 p-2 rounded-md focus:ring-1 focus:ring-emerald-500 transition text-sm" />
-                                <button onClick={handleAdd} className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-2 rounded-md transition text-sm">Add Key</button>
-                            </div>
-                        </div>
-
-                        <div className="mt-4 space-y-2">
-                             {renderKeyList(activeProvider)}
-                             {apiKeys.filter(k => k.provider === activeProvider).length === 0 && <p className="text-center text-slate-500 text-sm py-4">No {activeProvider} keys added yet.</p>}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// --- TOAST NOTIFICATION COMPONENT ---
-const Toast: FC<{ message: string | null; onClose: () => void }> = ({ message, onClose }) => {
-  useEffect(() => {
-    if (message) {
-      const timer = setTimeout(onClose, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [message, onClose]);
-
-  if (!message) return null;
-
-  return (
-    <div className="fixed top-6 right-6 w-auto max-w-sm bg-red-900/80 backdrop-blur-sm border border-red-700 text-red-200 px-4 py-3 rounded-lg shadow-lg z-50 animate-fade-in" role="alert">
-      <div className="flex items-start">
-        <div className="flex-1 pr-2">
-          <strong className="font-bold">Error: </strong>
-          <span className="break-words">{message}</span>
-        </div>
-        <button onClick={onClose} className="ml-auto -mt-1 -mr-1 p-1 rounded-full text-red-200 hover:text-white hover:bg-red-800/50 transition-colors" aria-label="Close">
-            <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-            </svg>
-        </button>
-      </div>
-    </div>
-  );
-};
-
-
-// --- MAIN APP COMPONENT ---
+// --- MAIN APP ---
 
 export default function App() {
-  const [scenario, setScenario] = useState("");
-  const [duration, setDuration] = useState(15);
-  const [referenceImages, setReferenceImages] = useState<ImageFile[]>([]);
-  const [prompts, setPrompts] = useState<ScenePrompt[]>([]);
-  const [isBuilding, setIsBuilding] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  
-  const [scriptContent, setScriptContent] = useState<string | null>(null);
-  const [scriptFileName, setScriptFileName] = useState<string | null>(null);
+    const [scenario, setScenario] = useState("");
+    const [duration, setDuration] = useState(1);
+    const [referenceImages, setReferenceImages] = useState<ImageFile[]>([]);
+    const [scriptFileName, setScriptFileName] = useState<string | null>(null);
+    const [scriptContent, setScriptContent] = useState<string | null>(null);
+    const [prompts, setPrompts] = useState<ScenePrompt[]>([]);
+    const [isBuilding, setIsBuilding] = useState(false);
+    const [isBatchGenerating, setIsBatchGenerating] = useState(false);
+    const [hasApiKey, setHasApiKey] = useState(false);
+    const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-  const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash-image');
-
-  const [isBatchGenerating, setIsBatchGenerating] = useState(false);
-  const generationQueue = useRef<number[]>([]);
-  const activeWorkers = useRef(0);
-
-  useEffect(() => {
-    // This effect runs once on component mount.
-    // Load saved settings from localStorage
-    try {
-        const savedKeys = localStorage.getItem('apiKeys');
-        if (savedKeys) setApiKeys(JSON.parse(savedKeys));
-        const savedModel = localStorage.getItem('selectedModel');
-        if (savedModel) setSelectedModel(savedModel);
-    } catch (e) {
-        console.error("Failed to load settings from localStorage", e);
-    }
-  }, []); 
-
-  const updateAndSaveKeys = (newKeys: ApiKey[]) => {
-    setApiKeys(newKeys);
-    localStorage.setItem('apiKeys', JSON.stringify(newKeys));
-  };
-  
-  const handleSelectModel = (model: string) => {
-    setSelectedModel(model);
-    localStorage.setItem('selectedModel', model);
-  }
-
-  const handleAddKey = (provider: ApiKey['provider'], name: string, key: string) => {
-    const newKey: ApiKey = { id: crypto.randomUUID(), provider, name, key, isActive: false };
-    const providerKeys = apiKeys.filter(k => k.provider === provider);
-    if (providerKeys.length === 0) {
-        newKey.isActive = true;
-    }
-    updateAndSaveKeys([...apiKeys, newKey]);
-  };
-
-  const handleDeleteKey = (id: string) => {
-    updateAndSaveKeys(apiKeys.filter(k => k.id !== id));
-  };
-
-  const handleSetActiveKey = (id: string) => {
-    const keyToActivate = apiKeys.find(k => k.id === id);
-    if (!keyToActivate) return;
-    
-    const updatedKeys = apiKeys.map(k => {
-        if (k.provider === keyToActivate.provider) {
-            return { ...k, isActive: k.id === id };
-        }
-        return k;
-    });
-    updateAndSaveKeys(updatedKeys);
-  };
-
-  const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (!e.target.files) return;
-      const files = Array.from(e.target.files).slice(0, MAX_REFERENCE_IMAGES);
-      if (files.length === 0) return;
-      setError(null);
-
-      try {
-          const imagePromises = files.map(async (file: File) => {
-              const { dataUrl, mimeType } = await fileToDataUrl(file);
-              const base64 = dataUrlToBase64(dataUrl);
-              return { name: file.name, dataUrl, base64, mimeType };
-          });
-          const newImages = await Promise.all(imagePromises);
-          setReferenceImages(newImages);
-      } catch (err) {
-          setError('Failed to read image files.');
-          console.error(err);
-      }
-  }, []);
-  
-  const handleScriptUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    const file = e.target.files[0];
-    if (file && (file.type === 'text/plain' || file.name.endsWith('.txt'))) {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            const text = event.target?.result as string;
-            setScriptContent(text);
-            setScriptFileName(file.name);
-            setScenario(''); // Clear scenario when script is uploaded
-            
-            const lines = text.split('\n').filter(line => line.trim() !== '');
-            const calculatedDuration = Math.ceil((lines.length * SCENE_DURATION_SECONDS) / 60);
-            setDuration(Math.max(1, calculatedDuration)); // Ensure duration is at least 1 minute
+    // API Key Checking
+    useEffect(() => {
+        const checkKey = async () => {
+            if (window.aistudio && window.aistudio.hasSelectedApiKey) {
+                const has = await window.aistudio.hasSelectedApiKey();
+                setHasApiKey(has);
+            } else {
+                 // Fallback if not running in the specific environment, though instructions say it's guaranteed.
+                 // We will default to false and force user to click the button which will fail if method missing.
+                 setHasApiKey(false);
+            }
         };
-        reader.onerror = () => {
-            setError('Failed to read script file.');
+        checkKey();
+    }, []);
+
+    const handleSelectKey = async () => {
+         if (window.aistudio && window.aistudio.openSelectKey) {
+             await window.aistudio.openSelectKey();
+             setHasApiKey(true);
+         } else {
+             alert("API Key selection is not available in this environment.");
+         }
+    };
+
+    // Toast Management
+    const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
+        const id = Math.random().toString(36).substr(2, 9);
+        setToasts((prev) => [...prev, { ...toast, id }]);
+        
+        if (!toast.persistent) {
+            setTimeout(() => {
+                removeToast(id);
+            }, 5000);
+        }
+    }, []);
+
+    const removeToast = useCallback((id: string) => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, []);
+
+
+    // File Handlers
+    const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!e.target.files) return;
+        const newFiles = Array.from(e.target.files);
+        const processed = await Promise.all(newFiles.slice(0, MAX_REFERENCE_IMAGES - referenceImages.length).map(async (file) => {
+            const { dataUrl, mimeType } = await fileToDataUrl(file);
+            return { name: file.name, dataUrl, base64: dataUrlToBase64(dataUrl), mimeType };
+        }));
+        setReferenceImages(prev => [...prev, ...processed].slice(0, MAX_REFERENCE_IMAGES));
+    };
+
+    const handleScriptUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setScriptFileName(file.name);
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+             const text = evt.target?.result as string;
+             setScriptContent(text);
+             // Estimate duration: 150 words per minute
+             const wordCount = text.split(/\s+/).length;
+             setDuration(Math.ceil(wordCount / 150));
         };
         reader.readAsText(file);
-    } else {
-        setError('Please upload a valid .txt file.');
-    }
-    // Reset the file input value to allow re-uploading the same file
-    e.target.value = '';
-  }, []);
+    };
 
-  const handleRemoveScript = useCallback(() => {
-    setScriptContent(null);
-    setScriptFileName(null);
-  }, []);
+    const handleRemoveScript = () => {
+        setScriptFileName(null);
+        setScriptContent(null);
+        setDuration(1);
+    };
 
-  const downloadPromptsAsXLSX = useCallback((promptsToDownload: ScenePrompt[]) => {
-    if (!promptsToDownload.length) return;
-    try {
-        const header = ["STT", "Phase", "Image Prompt", "Video Prompt"];
-        const data = promptsToDownload.map(p => [p.id, p.phase, p.imagePrompt, p.videoPrompt]);
+    // Prompt Generation
+    const buildPrompts = async () => {
+        setIsBuilding(true);
+        setPrompts([]);
+
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+            const totalScenes = Math.ceil((duration * 60) / SCENE_DURATION_SECONDS);
+            
+            const systemInstruction = `You are a visionary film director and cinematographer creating a shot list for a "${STYLE_LOCK}".
+            
+            Input:
+            - Scenario/Script: ${scriptContent || scenario}
+            - Total Duration: ${duration} minutes
+            - Target Scene Count: ${totalScenes}
+
+            Task:
+            Generate a JSON array of ${totalScenes} scenes. Distribute them across these phases: ${PHASES.map(p => `${p.phase} (${p.ratio * 100}%)`).join(", ")}.
+
+            For each scene, provide:
+            1. "id": Sequential integer.
+            2. "phase": The phase name.
+            3. "imagePrompt": A highly detailed, descriptive prompt for generating a photorealistic keyframe. Focus on lighting, texture, camera angle, and the physical action. STRICTLY ADHERE to the style: "Ultra-realistic, 8k, cinematic lighting".
+            4. "videoPrompt": A prompt for generating a 5-second video clip using Veo. Describe the motion and atmosphere.
+
+            Output strictly valid JSON.`;
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: "Generate the shot list now.",
+                config: {
+                    systemInstruction: systemInstruction,
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                id: { type: Type.INTEGER },
+                                phase: { type: Type.STRING },
+                                imagePrompt: { type: Type.STRING },
+                                videoPrompt: { type: Type.STRING },
+                            },
+                            required: ["id", "phase", "imagePrompt", "videoPrompt"]
+                        }
+                    }
+                }
+            });
+
+            const jsonText = response.text;
+            if (!jsonText) throw new Error("No response from AI");
+            
+            const generatedData = JSON.parse(jsonText) as ScenePrompt[];
+            setPrompts(generatedData);
+            addToast({ type: 'success', title: 'Prompts Generated', message: `Successfully created ${generatedData.length} scene prompts.` });
+
+        } catch (error) {
+            console.error(error);
+            addToast({ type: 'error', title: 'Generation Failed', message: error instanceof Error ? error.message : "Unknown error" });
+        } finally {
+            setIsBuilding(false);
+        }
+    };
+
+    // Image Generation
+    const handleGenerateImage = async (id: number) => {
+        const prompt = prompts.find(p => p.id === id);
+        if (!prompt) return;
+
+        // Optimistic update
+        setPrompts(prev => prev.map(p => p.id === id ? { ...p, isLoading: true, generationFailed: false } : p));
+
+        try {
+            const imageUrl = await generateImageFromPrompt(prompt.imagePrompt, referenceImages, process.env.API_KEY || "", 'gemini-2.5-flash-image');
+            setPrompts(prev => prev.map(p => p.id === id ? { ...p, generatedImageUrl: imageUrl, isLoading: false } : p));
+        } catch (error) {
+            setPrompts(prev => prev.map(p => p.id === id ? { ...p, isLoading: false, generationFailed: true } : p));
+            addToast({ type: 'error', title: `Scene ${id} Error`, message: "Failed to generate image." });
+        }
+    };
+
+    const handleGenerateAllImages = async () => {
+        if (prompts.length === 0) return;
+        setIsBatchGenerating(true);
+        let successCount = 0;
+        let failureCount = 0;
+
+        const pendingPrompts = prompts.filter(p => !p.generatedImageUrl);
         
-        const worksheet = XLSX.utils.aoa_to_sheet([header, ...data]);
+        // Semaphore / Chunking
+        const chunkSize = MAX_CONCURRENT_GENERATIONS;
+        for (let i = 0; i < pendingPrompts.length; i += chunkSize) {
+            const chunk = pendingPrompts.slice(i, i + chunkSize);
+            await Promise.all(chunk.map(async (prompt) => {
+                try {
+                    setPrompts(prev => prev.map(p => p.id === prompt.id ? { ...p, isLoading: true, generationFailed: false } : p));
+                    const imageUrl = await generateImageFromPrompt(prompt.imagePrompt, referenceImages, process.env.API_KEY || "", 'gemini-2.5-flash-image');
+                    setPrompts(prev => prev.map(p => p.id === prompt.id ? { ...p, generatedImageUrl: imageUrl, isLoading: false } : p));
+                    successCount++;
+                } catch (e) {
+                    console.error(e);
+                    setPrompts(prev => prev.map(p => p.id === prompt.id ? { ...p, isLoading: false, generationFailed: true } : p));
+                    failureCount++;
+                }
+            }));
+        }
 
-        const columnWidths = [
-            { wch: 5 },  // STT
-            { wch: 15 }, // Phase
-            { wch: 80 }, // Image Prompt
-            { wch: 80 }, // Video Prompt
-        ];
-        worksheet['!cols'] = columnWidths;
+        setIsBatchGenerating(false);
+        
+        addToast({
+            type: failureCount > 0 ? 'warning' : 'success',
+            title: 'Batch Generation Complete',
+            message: `Successfully generated: ${successCount} images.\nFailed: ${failureCount} images.`,
+            persistent: true 
+        });
+    };
 
+    // Exports
+    const downloadXLSX = () => {
+        const worksheet = XLSX.utils.json_to_sheet(prompts.map(p => ({
+            ID: p.id,
+            Phase: p.phase,
+            "Image Prompt": p.imagePrompt,
+            "Video Prompt": p.videoPrompt,
+            "Image URL": p.generatedImageUrl || ""
+        })));
         const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, worksheet, "Prompts");
-        XLSX.writeFile(workbook, "all-prompts.xlsx");
-    } catch (err) {
-        setError("Failed to generate XLSX file. The XLSX library might not be loaded correctly.");
-        console.error("Failed to generate XLSX file:", err);
-    }
-  }, []);
+        XLSX.writeFile(workbook, "Prehistoric_Project_Prompts.xlsx");
+    };
 
-  const handleBuildPrompts = useCallback(() => {
-    if (referenceImages.length < MAX_REFERENCE_IMAGES) {
-      setError(`Please upload exactly ${MAX_REFERENCE_IMAGES} character images.`);
-      return;
-    }
-    setIsBuilding(true);
-    setError(null);
-    setPrompts([]);
+    const copyAllPrompts = (type: 'image' | 'video') => {
+        const text = prompts.map(p => type === 'image' ? p.imagePrompt : p.videoPrompt).join("\n\n");
+        navigator.clipboard.writeText(text);
+        addToast({ type: 'info', title: 'Copied', message: `All ${type} prompts copied to clipboard.` });
+    };
 
-    setTimeout(() => {
-        if (scriptContent) {
-            // --- SCRIPT-BASED GENERATION ---
-            const lines = scriptContent.split('\n').filter(line => line.trim() !== '');
-            if (lines.length === 0) {
-                setError("The uploaded script is empty or contains only whitespace.");
-                setIsBuilding(false);
-                return;
-            }
-            
-            const scenes: ScenePrompt[] = lines.map((line, index) => {
-                const actionDescription = line.trim();
-                const sceneId = index + 1;
-
-                const imagePrompt = `${STYLE_LOCK.replace(/\n/g, ' ')} ${actionDescription}. Distinct moment in the story. Tactile ASMR details (stone flaking, fire crackling). Photorealistic. No text, words, or logos.`;
-                const videoPrompt = `Scene ${sceneId}: "${actionDescription}". Direct continuation of the still image, bringing it to life with subtle motion. Handheld camera (3-5% sway), focus breathing. Prehistoric ambient sounds only. Duration ${SCENE_DURATION_SECONDS}s. Family safe for monetization.`;
-                
-                return { id: sceneId, phase: "From Script", imagePrompt, videoPrompt };
-            });
-            
-            setPrompts(scenes);
-
-        } else {
-            // --- SCENARIO-BASED GENERATION (Original Logic) ---
-            const totalSec = duration * 60;
-            const scenes: ScenePrompt[] = [];
-            let id = 1;
-            const baseScenario = scenario || "prehistoric survival";
-
-            const generateActionDescription = (phase: string, index: number, totalInPhase: number, baseScenario: string): string => {
-                const progress = totalInPhase > 1 ? `(part ${index + 1} of ${totalInPhase})` : '';
-                
-                switch(phase) {
-                    case "Hook":
-                        return `Establishing the main character and their immediate environment, related to the topic of ${baseScenario}. The character is observing their surroundings with a thoughtful expression. ${progress}`;
-                    case "Quest":
-                        if (index === 0) return `The character begins a journey with purpose, moving through the landscape. This is the start of a task related to ${baseScenario}. ${progress}`;
-                        if (index === totalInPhase - 1) return `The character is nearing their goal, showing a mix of fatigue and focus. The quest for ${baseScenario} is almost complete. ${progress}`;
-                        return `The character navigates a challenging part of the terrain (e.g., crossing a shallow river, climbing a rocky outcrop) as they continue their quest for ${baseScenario}. ${progress}`;
-                    case "Conflict":
-                        if (index < Math.floor(totalInPhase / 2)) return `Tension builds. The character detects a sign of danger or the initial stage of a challenge related to ${baseScenario}. They are cautious and alert. ${progress}`;
-                        return `The height of the conflict. The character is actively engaged with the main challenge (e.g., facing a predator, enduring a harsh storm) in their story about ${baseScenario}. ${progress}`;
-                    case "Innovation":
-                        if (index === 0) return `The character struggles with an old method, a look of frustration hints at the need for a new solution. This is related to ${baseScenario}. ${progress}`;
-                        if (index < totalInPhase - 1) return `Deep in concentration, the character experiments with new materials, crafting a new tool or perfecting a new technique. Focus on the hands-on process of innovation for ${baseScenario}. ${progress}`;
-                        return `Success! The character uses their new tool or discovery for the first time, with a clear look of accomplishment. This is a breakthrough in their story of ${baseScenario}. ${progress}`;
-                    case "Civilization":
-                        if (index < Math.floor(totalInPhase / 2)) return `The focus is on building and community. The character improves their shelter or works alongside others on a task, showing early signs of a settled life, related to ${baseScenario}. ${progress}`;
-                        return `A slice of daily life. The character is using improved tools to prepare food, or sharing a quiet moment with their small community, showing the stability they have achieved through ${baseScenario}. ${progress}`;
-                    case "Reflection":
-                        return `A quiet, concluding moment. The character looks out at the landscape from a high vantage point, reflecting on their journey and the events of ${baseScenario}. ${progress}`;
-                    default:
-                        return `A scene from the story of ${baseScenario}. ${progress}`;
-                }
-            }
-
-            PHASES.forEach((p) => {
-                const numScenesInPhase = Math.max(1, Math.round((totalSec * p.ratio) / SCENE_DURATION_SECONDS));
-                for (let i = 0; i < numScenesInPhase; i++) {
-                const actionDescription = generateActionDescription(p.phase, i, numScenesInPhase, baseScenario);
-
-                const imagePrompt = `${STYLE_LOCK.replace(/\n/g, ' ')} ${actionDescription}. Distinct moment in the story. Tactile ASMR details (stone flaking, fire crackling). Photorealistic. No text, words, or logos.`;
-                
-                const videoPrompt = `Scene ${id}: "${actionDescription}". Direct continuation of the still image, bringing it to life with subtle motion. Handheld camera (3-5% sway), focus breathing. Prehistoric ambient sounds only. Duration ${SCENE_DURATION_SECONDS}s. Family safe for monetization.`;
-                
-                scenes.push({ id, phase: p.phase, imagePrompt, videoPrompt });
-                id++;
-                }
-            });
-            setPrompts(scenes);
+    const downloadAllImages = () => {
+        const images = prompts.filter(p => p.generatedImageUrl);
+        if (images.length === 0) {
+            addToast({ type: 'warning', title: 'No Images', message: "Generate images first." });
+            return;
         }
-      setIsBuilding(false);
-    }, 500);
-  }, [referenceImages.length, duration, scenario, scriptContent]);
+        // Naive download for simplicity - typically would zip
+        let delay = 0;
+        images.forEach(p => {
+             setTimeout(() => {
+                const a = document.createElement('a');
+                a.href = p.generatedImageUrl!;
+                a.download = `scene-${p.id}.png`;
+                a.click();
+             }, delay);
+             delay += 200;
+        });
+        addToast({ type: 'info', title: 'Downloading', message: `Downloading ${images.length} images...` });
+    };
 
-  const handleGenerateImage = useCallback(async (sceneId: number) => {
-    const promptToGenerate = prompts.find(p => p.id === sceneId);
-    if (!promptToGenerate) return;
-    
-    const activeGoogleKey = apiKeys.find(k => k.provider === 'Google' && k.isActive);
+    return (
+        <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-emerald-500/30">
+            <ToastContainer toasts={toasts} removeToast={removeToast} />
+            
+            <header className="bg-slate-950 border-b border-slate-800 sticky top-0 z-40">
+                <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+                    <h1 className="text-xl font-bold bg-gradient-to-r from-emerald-400 to-teal-500 bg-clip-text text-transparent">
+                        Prehistoric Docu-Gen
+                    </h1>
+                    {hasApiKey && <span className="text-xs text-emerald-500 bg-emerald-950/50 px-2 py-1 rounded border border-emerald-900">API Key Active</span>}
+                </div>
+            </header>
 
-    if (!activeGoogleKey) {
-        setError("No active Google API key found. Please add or activate one in the API Settings.");
-        setIsModalOpen(true);
-        return;
-    }
+            <main className="max-w-7xl mx-auto px-6 py-8 grid lg:grid-cols-12 gap-8">
+                {/* LEFT PANEL: CONTROLS */}
+                <div className="lg:col-span-4">
+                    <ControlPanel 
+                        scenario={scenario} setScenario={setScenario}
+                        duration={duration} setDuration={setDuration}
+                        referenceImages={referenceImages} onImageUpload={handleImageUpload}
+                        onBuildPrompts={buildPrompts} isBuilding={isBuilding}
+                        scriptFileName={scriptFileName} onScriptUpload={handleScriptUpload} onRemoveScript={handleRemoveScript}
+                        hasApiKey={hasApiKey} onSelectKey={handleSelectKey}
+                    />
+                </div>
 
-    setPrompts(prev => prev.map(p => p.id === sceneId ? { ...p, isLoading: true, generationFailed: false } : p));
-    setError(null);
-
-    try {
-        const imageUrl = await generateImageFromPrompt(promptToGenerate.imagePrompt, referenceImages, activeGoogleKey.key, selectedModel);
-        setPrompts(prev => prev.map(p => p.id === sceneId ? { ...p, generatedImageUrl: imageUrl, isLoading: false } : p));
-    } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
-        setError(`Error for Scene ${sceneId}: ${errorMessage}`);
-        setPrompts(prev => prev.map(p => p.id === sceneId ? { ...p, isLoading: false, generationFailed: true } : p));
-    }
-  }, [prompts, referenceImages, apiKeys, selectedModel]);
-
-  const handleDownloadAllPrompts = useCallback(() => {
-    downloadPromptsAsXLSX(prompts);
-  }, [prompts, downloadPromptsAsXLSX]);
-
-  // --- BATCH PROCESSING LOGIC ---
-  const handleGenerateImageRef = useRef(handleGenerateImage);
-  handleGenerateImageRef.current = handleGenerateImage;
-
-  const processBatchQueue = useCallback(async () => {
-    // This function acts as a worker. It processes one item and then calls itself
-    // to process the next, ensuring continuous work until the queue is empty.
-    
-    // If there are no more items in the queue, this worker's job is done.
-    if (generationQueue.current.length === 0) {
-      activeWorkers.current--;
-      // If this was the last active worker, we're done with the batch.
-      if (activeWorkers.current <= 0) {
-        setIsBatchGenerating(false);
-      }
-      return;
-    }
-
-    const sceneId = generationQueue.current.shift();
-    if (sceneId) {
-      try {
-        await handleGenerateImageRef.current(sceneId);
-      } catch (e) {
-        // Error is handled within handleGenerateImage, but log here for debugging.
-        console.error(`Worker failed processing Scene ${sceneId}:`, e);
-      } finally {
-        // Immediately try to process the next item in the queue.
-        processBatchQueue();
-      }
-    } else {
-      // This case is a safeguard. If we pulled a falsy value, end this worker's chain.
-       activeWorkers.current--;
-      if (activeWorkers.current <= 0) {
-        setIsBatchGenerating(false);
-      }
-    }
-  }, []);
-
-  const handleGenerateAllImages = useCallback(() => {
-    if (isBatchGenerating) return;
-
-    const idsToGenerate = prompts.filter(p => !p.generatedImageUrl && !p.isLoading).map(p => p.id);
-    if (idsToGenerate.length === 0) {
-        setError("All images have already been generated or are currently in progress.");
-        return;
-    }
-    generationQueue.current = idsToGenerate;
-    setIsBatchGenerating(true);
-    activeWorkers.current = 0;
-
-    // Start a number of workers up to the concurrency limit.
-    const workersToStart = Math.min(idsToGenerate.length, MAX_CONCURRENT_GENERATIONS);
-    for (let i = 0; i < workersToStart; i++) {
-        activeWorkers.current++;
-        processBatchQueue();
-    }
-  }, [prompts, isBatchGenerating, processBatchQueue]);
-
-  const handleDownloadAllImages = useCallback(() => {
-    const imagesToDownload = prompts.filter(p => p.generatedImageUrl);
-    if (imagesToDownload.length === 0) {
-        setError("No images have been generated to download.");
-        return;
-    }
-    imagesToDownload.forEach((prompt, index) => {
-        setTimeout(() => {
-            if (!prompt.generatedImageUrl) return;
-            const a = document.createElement('a');
-            a.href = prompt.generatedImageUrl;
-            a.download = `scene-${prompt.id}.png`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        }, index * 300); // Stagger downloads to prevent browser issues
-    });
-  }, [prompts]);
-  
-  const hasGeneratedImages = useMemo(() => prompts.some(p => p.generatedImageUrl), [prompts]);
-
-  return (
-    <div className="min-h-screen bg-black text-white p-4 md:p-6">
-      <header className="flex justify-between items-center mb-8">
-        <div/>
-        <h1 className="text-3xl md:text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-teal-200 text-center">
-          Tool Tự Động Hóa Chủ Đề Người Tiền Sử
-        </h1>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-2"
-          aria-label="Open API Settings"
-        >
-          <KeyIcon className="h-5 w-5" />
-          <span className="hidden md:inline">API Settings</span>
-        </button>
-      </header>
-      
-      <Toast message={error} onClose={() => setError(null)} />
-
-      <main className="grid lg:grid-cols-3 gap-6 items-start">
-        <div className="lg:col-span-1">
-          <ControlPanel
-            scenario={scenario}
-            setScenario={setScenario}
-            duration={duration}
-            setDuration={setDuration}
-            referenceImages={referenceImages}
-            onImageUpload={handleImageUpload}
-            onBuildPrompts={handleBuildPrompts}
-            isBuilding={isBuilding}
-            scriptFileName={scriptFileName}
-            onScriptUpload={handleScriptUpload}
-            onRemoveScript={handleRemoveScript}
-          />
+                {/* RIGHT PANEL: OUTPUT */}
+                <div className="lg:col-span-8 space-y-6">
+                    {prompts.length > 0 ? (
+                        <>
+                            <div className="bg-slate-950/50 border border-slate-800 p-6 rounded-2xl">
+                                <h2 className="text-xl font-bold text-emerald-400 mb-4">2. Generated Prompts</h2>
+                                <div className="flex flex-wrap gap-3 mb-6">
+                                    <button onClick={handleGenerateAllImages} disabled={isBatchGenerating} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-md font-medium text-sm transition shadow-lg shadow-emerald-900/20 disabled:bg-slate-700 disabled:text-slate-400">
+                                        {isBatchGenerating ? <SpinnerIcon className="animate-spin h-4 w-4" /> : <SparklesIcon className="h-4 w-4" />}
+                                        {isBatchGenerating ? 'Generating...' : 'Generate All Images'}
+                                    </button>
+                                    <button onClick={downloadAllImages} className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-md text-sm transition">
+                                        <DownloadIcon className="h-4 w-4" /> Download All Images
+                                    </button>
+                                    <button onClick={() => copyAllPrompts('image')} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-md text-sm border border-slate-700 transition">
+                                        <CopyIcon className="h-4 w-4" /> Copy All Image Prompts
+                                    </button>
+                                    <button onClick={() => copyAllPrompts('video')} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-md text-sm border border-slate-700 transition">
+                                        <CopyIcon className="h-4 w-4" /> Copy All Video Prompts
+                                    </button>
+                                    <button onClick={downloadXLSX} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-md text-sm border border-slate-700 transition">
+                                        <DownloadIcon className="h-4 w-4" /> Download All Prompts (XLSX)
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div className="space-y-4">
+                                {prompts.map((p) => (
+                                    <PromptCard 
+                                        key={p.id} 
+                                        prompt={p} 
+                                        onGenerateImage={handleGenerateImage} 
+                                        isBatchGenerating={isBatchGenerating}
+                                    />
+                                ))}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="h-full flex flex-col items-center justify-center p-12 bg-slate-950/30 border-2 border-slate-800 border-dashed rounded-2xl text-slate-500">
+                            <SparklesIcon className="h-16 w-16 mb-4 opacity-20" />
+                            <p className="text-lg">Set up your scenario on the left and click "Generate Prompts" to begin.</p>
+                        </div>
+                    )}
+                </div>
+            </main>
         </div>
-
-        <div className="lg:col-span-2">
-          <PromptDisplay 
-            prompts={prompts} 
-            onGenerateImage={handleGenerateImage}
-            onDownloadAllPrompts={handleDownloadAllPrompts}
-            onGenerateAllImages={handleGenerateAllImages}
-            onDownloadAllImages={handleDownloadAllImages}
-            isBatchGenerating={isBatchGenerating}
-            hasGeneratedImages={hasGeneratedImages}
-          />
-        </div>
-      </main>
-
-      <ApiKeyModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        apiKeys={apiKeys}
-        onAddKey={handleAddKey}
-        onDeleteKey={handleDeleteKey}
-        onSetActiveKey={handleSetActiveKey}
-        selectedModel={selectedModel}
-        onSelectModel={handleSelectModel}
-      />
-    </div>
-  );
+    );
 }
